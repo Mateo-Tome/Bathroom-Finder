@@ -3,7 +3,7 @@ import * as Location from 'expo-location';
 import { addDoc, collection } from 'firebase/firestore';
 import { getDownloadURL, getStorage, ref, uploadBytes } from 'firebase/storage';
 import React, { useState } from 'react';
-import { Alert, Button, Image, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Button, Image, SafeAreaView, StyleSheet, Text, TextInput, View, ScrollvView } from 'react-native';
 import { db } from '../../firebaseConfig';
 const storage = getStorage();
 
