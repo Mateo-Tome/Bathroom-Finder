@@ -21,38 +21,49 @@ export type BathroomRatingsSummary = {
 
 export type Bathroom = {
   id: string;
+
   name: string;
   latitude: number;
   longitude: number;
+
   address?: string;
   notes?: string;
 
   accessType: AccessType;
   codeHint?: string;
-  status: BathroomStatus;
 
+  status: BathroomStatus;
   isPublic: boolean;
+
   wheelchairAccessible?: boolean;
   babyChangingStation?: boolean;
 
-  ratings: BathroomRatingsSummary;
+  ratings?: BathroomRatingsSummary;
+
+  cleanlinessAvg?: number;
+  safetyAvg?: number;
+  privacyAvg?: number;
+  accessAvg?: number;
+  overallAvg?: number;
+  totalReviews?: number;
 
   coverImageUrl?: string;
   imageUrls: string[];
 
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: any;
+  updatedAt?: any;
 };
 
 export type BathroomUpdate = {
-  id: string;
+  id?: string;
+
   bathroomId: string;
-  userId: string;
+  userId?: string;
 
   cleanliness: RatingValue;
   safety: RatingValue;
   privacy: RatingValue;
-  easeOfAccess: RatingValue;
+  access: RatingValue;
 
   note?: string;
   photoUrls: string[];
@@ -61,5 +72,5 @@ export type BathroomUpdate = {
   statusUpdate?: BathroomStatus;
   accessTypeUpdate?: AccessType;
 
-  createdAt: string;
+  createdAt?: any;
 };
