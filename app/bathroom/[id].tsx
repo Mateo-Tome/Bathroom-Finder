@@ -1,18 +1,29 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { doc, getDoc } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  increment,
+  serverTimestamp,
+  updateDoc,
+} from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    Linking,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 
 import { db } from "@/firebaseConfig";
+
+type VerificationStatus = "unverified" | "verified" | "flagged";
 
 type Bathroom = {
   id: string;
@@ -28,21 +39,49 @@ type Bathroom = {
   safetyAvg?: number;
   accessAvg?: number;
   privacyAvg?: number;
+  overallAvg?: number;
   totalReviews?: number;
   wheelchairAccessible?: boolean;
+
+  verificationStatus?: VerificationStatus;
+  verificationCount?: number;
+  reportCount?: number;
+  isFlagged?: boolean;
+  isHidden?: boolean;
 };
+
+const REPORT_REASONS = [
+  "No bathroom here",
+  "Unsafe location",
+  "Wrong location",
+  "Closed permanently",
+  "Fake / spam",
+  "Inappropriate photo",
+];
 
 function formatAccess(accessType?: string) {
   if (!accessType) return "Access unknown";
+
   return accessType
     .replaceAll("_", " ")
-    .replace(/\b\w/g, (l) => l.toUpperCase());
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function getScoreColor(value?: number) {
+  if (!value || value <= 0) return "#64748b";
+  if (value >= 4.2) return "#16a34a";
+  if (value >= 3.4) return "#84cc16";
+  if (value >= 2.6) return "#eab308";
+  if (value >= 1.8) return "#f97316";
+  return "#dc2626";
 }
 
 function Score({ label, value }: { label: string; value?: number }) {
+  const color = getScoreColor(value);
+
   return (
-    <View style={styles.scoreCard}>
-      <Text style={styles.scoreValue}>
+    <View style={[styles.scoreCard, { borderColor: color }]}>
+      <Text style={[styles.scoreValue, { color }]}>
         {value && value > 0 ? value.toFixed(1) : "New"}
       </Text>
       <Text style={styles.scoreLabel}>{label}</Text>
@@ -56,57 +95,156 @@ export default function BathroomDetailScreen() {
 
   const [bathroom, setBathroom] = useState<Bathroom | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isActionSaving, setIsActionSaving] = useState(false);
+
+  async function loadBathroom() {
+    if (!id) return;
+
+    try {
+      setIsLoading(true);
+
+      const snapshot = await getDoc(doc(db, "bathrooms", id));
+
+      if (!snapshot.exists()) {
+        setBathroom(null);
+        return;
+      }
+
+      const data = snapshot.data();
+
+      setBathroom({
+        id: snapshot.id,
+        name: data.name,
+        notes: data.notes,
+        latitude: Number(data.latitude),
+        longitude: Number(data.longitude),
+        accessType: data.accessType,
+        codeHint: data.codeHint,
+        imageUrls: data.imageUrls ?? data.images ?? [],
+        coverImageUrl:
+          data.coverImageUrl ?? data.imageUrls?.[0] ?? data.images?.[0] ?? null,
+        cleanlinessAvg: data.cleanlinessAvg ?? data.ratings?.cleanlinessAvg,
+        safetyAvg: data.safetyAvg ?? data.ratings?.safetyAvg,
+        accessAvg: data.accessAvg ?? data.ratings?.accessAvg,
+        privacyAvg: data.privacyAvg ?? data.ratings?.privacyAvg,
+        overallAvg: data.overallAvg ?? data.ratings?.overallAvg,
+        totalReviews: data.totalReviews ?? data.ratings?.totalReviews,
+        wheelchairAccessible: data.wheelchairAccessible,
+
+        verificationStatus: data.verificationStatus ?? "unverified",
+        verificationCount: data.verificationCount ?? 0,
+        reportCount: data.reportCount ?? 0,
+        isFlagged: data.isFlagged ?? false,
+        isHidden: data.isHidden ?? false,
+      });
+    } catch (error) {
+      console.error("Error loading bathroom:", error);
+      Alert.alert("Error", "Could not load this bathroom.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
   useEffect(() => {
-    async function loadBathroom() {
-      if (!id) return;
-
-      try {
-        const snapshot = await getDoc(doc(db, "bathrooms", id));
-
-        if (!snapshot.exists()) {
-          setBathroom(null);
-          return;
-        }
-
-        const data = snapshot.data();
-
-        setBathroom({
-          id: snapshot.id,
-          name: data.name,
-          notes: data.notes,
-          latitude: Number(data.latitude),
-          longitude: Number(data.longitude),
-          accessType: data.accessType,
-          codeHint: data.codeHint,
-          imageUrls: data.imageUrls ?? data.images ?? [],
-          coverImageUrl:
-            data.coverImageUrl ??
-            data.imageUrls?.[0] ??
-            data.images?.[0] ??
-            null,
-          cleanlinessAvg: data.cleanlinessAvg ?? data.ratings?.cleanlinessAvg,
-          safetyAvg: data.safetyAvg ?? data.ratings?.safetyAvg,
-          accessAvg: data.accessAvg ?? data.ratings?.accessAvg,
-          privacyAvg: data.privacyAvg ?? data.ratings?.privacyAvg,
-          totalReviews: data.totalReviews ?? data.ratings?.totalReviews,
-          wheelchairAccessible: data.wheelchairAccessible,
-        });
-      } catch (error) {
-        console.error("Error loading bathroom:", error);
-        alert("Could not load this bathroom.");
-      } finally {
-        setIsLoading(false);
-      }
-    }
-
     loadBathroom();
   }, [id]);
 
   const openDirections = async () => {
     if (!bathroom) return;
+
     const url = `https://www.google.com/maps/search/?api=1&query=${bathroom.latitude},${bathroom.longitude}`;
     await Linking.openURL(url);
+  };
+
+  const verifyBathroom = async () => {
+    if (!bathroom || isActionSaving) return;
+
+    try {
+      setIsActionSaving(true);
+
+      const nextVerificationCount = (bathroom.verificationCount ?? 0) + 1;
+      const shouldBeVerified = nextVerificationCount >= 5;
+
+      await addDoc(collection(db, "bathroomVerifications"), {
+        bathroomId: bathroom.id,
+        createdAt: serverTimestamp(),
+        note: "User confirmed this bathroom exists.",
+      });
+
+      await updateDoc(doc(db, "bathrooms", bathroom.id), {
+        verificationCount: increment(1),
+        verificationStatus: shouldBeVerified ? "verified" : "unverified",
+        lastVerifiedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      Alert.alert(
+        "Thanks",
+        shouldBeVerified
+          ? "This bathroom is now verified."
+          : "Your verification was saved.",
+      );
+
+      await loadBathroom();
+    } catch (error) {
+      console.error("Error verifying bathroom:", error);
+      Alert.alert("Error", "Could not verify this bathroom.");
+    } finally {
+      setIsActionSaving(false);
+    }
+  };
+
+  const reportBathroom = async (reason: string) => {
+    if (!bathroom || isActionSaving) return;
+
+    try {
+      setIsActionSaving(true);
+
+      const nextReportCount = (bathroom.reportCount ?? 0) + 1;
+      const shouldFlag = nextReportCount >= 3;
+      const shouldHide = nextReportCount >= 5;
+
+      await addDoc(collection(db, "bathroomReports"), {
+        bathroomId: bathroom.id,
+        reason,
+        createdAt: serverTimestamp(),
+        status: "open",
+      });
+
+      await updateDoc(doc(db, "bathrooms", bathroom.id), {
+        reportCount: increment(1),
+        isFlagged: shouldFlag,
+        isHidden: shouldHide,
+        verificationStatus: shouldFlag
+          ? "flagged"
+          : (bathroom.verificationStatus ?? "unverified"),
+        updatedAt: serverTimestamp(),
+      });
+
+      Alert.alert(
+        "Report sent",
+        shouldHide
+          ? "This bathroom has been hidden until review."
+          : "Thanks. This report was sent for review.",
+      );
+
+      await loadBathroom();
+    } catch (error) {
+      console.error("Error reporting bathroom:", error);
+      Alert.alert("Error", "Could not report this bathroom.");
+    } finally {
+      setIsActionSaving(false);
+    }
+  };
+
+  const showReportOptions = () => {
+    Alert.alert("Report problem", "What is wrong with this bathroom?", [
+      ...REPORT_REASONS.map((reason) => ({
+        text: reason,
+        onPress: () => reportBathroom(reason),
+      })),
+      { text: "Cancel", style: "cancel" as const },
+    ]);
   };
 
   if (isLoading) {
@@ -130,6 +268,9 @@ export default function BathroomDetailScreen() {
   }
 
   const heroImage = bathroom.coverImageUrl || bathroom.imageUrls?.[0];
+  const status = bathroom.isFlagged
+    ? "flagged"
+    : (bathroom.verificationStatus ?? "unverified");
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -150,21 +291,40 @@ export default function BathroomDetailScreen() {
 
       <View style={styles.card}>
         <Text style={styles.title}>{bathroom.name ?? "Bathroom"}</Text>
+
         <Text style={styles.meta}>
           {bathroom.totalReviews ?? 0} reviews ·{" "}
           {formatAccess(bathroom.accessType)}
         </Text>
 
         <View style={styles.badgeRow}>
-          {bathroom.wheelchairAccessible && (
-            <View style={styles.badgeBlue}>
-              <Text style={styles.badgeBlueText}>♿ Accessible</Text>
+          {status === "verified" && (
+            <View style={styles.verifiedBadge}>
+              <Text style={styles.verifiedBadgeText}>Verified</Text>
             </View>
           )}
 
+          {status === "unverified" && (
+            <View style={styles.unverifiedBadge}>
+              <Text style={styles.unverifiedBadgeText}>Unverified</Text>
+            </View>
+          )}
+
+          {status === "flagged" && (
+            <View style={styles.flaggedBadge}>
+              <Text style={styles.flaggedBadgeText}>Flagged for review</Text>
+            </View>
+          )}
+
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>
+              {bathroom.verificationCount ?? 0}/5 confirmations
+            </Text>
+          </View>
+
           {!!bathroom.codeHint && (
             <View style={styles.badge}>
-              <Text style={styles.badgeText}>PIN / code info available</Text>
+              <Text style={styles.badgeText}>PIN / code info</Text>
             </View>
           )}
         </View>
@@ -190,16 +350,46 @@ export default function BathroomDetailScreen() {
           </View>
         )}
 
-        <View style={styles.actionRow}>
+        <View style={styles.warningBox}>
+          <Text style={styles.warningTitle}>Safety note</Text>
+          <Text style={styles.warningText}>
+            Use your judgment. If a location seems unsafe, leave and report it.
+            Verification helps, but it does not guarantee safety.
+          </Text>
+        </View>
+
+        <View style={styles.actionGrid}>
           <Pressable
-            style={styles.secondaryButton}
+            style={styles.primaryButton}
             onPress={() => router.push(`/update/${bathroom.id}` as any)}
           >
-            <Text style={styles.secondaryButtonText}>Add Update</Text>
+            <Text style={styles.primaryButtonText}>Rate / Update</Text>
           </Pressable>
 
-          <Pressable style={styles.primaryButton} onPress={openDirections}>
-            <Text style={styles.primaryButtonText}>Directions</Text>
+          <Pressable style={styles.secondaryButton} onPress={openDirections}>
+            <Text style={styles.secondaryButtonText}>Directions</Text>
+          </Pressable>
+
+          <Pressable
+            style={[
+              styles.secondaryButton,
+              isActionSaving && styles.disabledButton,
+            ]}
+            onPress={verifyBathroom}
+            disabled={isActionSaving}
+          >
+            <Text style={styles.secondaryButtonText}>Verify Exists</Text>
+          </Pressable>
+
+          <Pressable
+            style={[
+              styles.dangerButton,
+              isActionSaving && styles.disabledButton,
+            ]}
+            onPress={showReportOptions}
+            disabled={isActionSaving}
+          >
+            <Text style={styles.dangerButtonText}>Report Problem</Text>
           </Pressable>
         </View>
       </View>
@@ -251,6 +441,27 @@ const styles = StyleSheet.create({
   title: { color: "#0f172a", fontSize: 28, fontWeight: "900" },
   meta: { color: "#64748b", marginTop: 4, fontWeight: "700" },
   badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14 },
+  verifiedBadge: {
+    backgroundColor: "#dcfce7",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  verifiedBadgeText: { color: "#166534", fontWeight: "900", fontSize: 12 },
+  unverifiedBadge: {
+    backgroundColor: "#fef3c7",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  unverifiedBadgeText: { color: "#92400e", fontWeight: "900", fontSize: 12 },
+  flaggedBadge: {
+    backgroundColor: "#fee2e2",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  flaggedBadgeText: { color: "#991b1b", fontWeight: "900", fontSize: 12 },
   badge: {
     backgroundColor: "#dbeafe",
     borderRadius: 999,
@@ -258,23 +469,15 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   badgeText: { color: "#1d4ed8", fontWeight: "900", fontSize: 12 },
-  badgeBlue: {
-    backgroundColor: "#2563eb",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  badgeBlueText: { color: "#fff", fontWeight: "900", fontSize: 12 },
   scoreRow: { flexDirection: "row", gap: 8, marginTop: 16 },
   scoreCard: {
     flex: 1,
     backgroundColor: "#f8fafc",
     borderRadius: 16,
     padding: 10,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
+    borderWidth: 2,
   },
-  scoreValue: { color: "#0f172a", fontSize: 18, fontWeight: "900" },
+  scoreValue: { fontSize: 18, fontWeight: "900" },
   scoreLabel: {
     color: "#64748b",
     fontSize: 11,
@@ -291,21 +494,48 @@ const styles = StyleSheet.create({
   },
   infoTitle: { color: "#0f172a", fontWeight: "900", marginBottom: 5 },
   infoText: { color: "#334155", lineHeight: 21 },
-  actionRow: { flexDirection: "row", gap: 10, marginTop: 18 },
-  secondaryButton: {
-    flex: 1,
-    backgroundColor: "#f1f5f9",
-    borderRadius: 17,
-    paddingVertical: 15,
-    alignItems: "center",
+  warningBox: {
+    backgroundColor: "#fff7ed",
+    borderRadius: 18,
+    padding: 14,
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: "#fed7aa",
   },
-  secondaryButtonText: { color: "#0f172a", fontWeight: "900" },
+  warningTitle: { color: "#9a3412", fontWeight: "900", marginBottom: 5 },
+  warningText: { color: "#7c2d12", lineHeight: 20 },
+  actionGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 18,
+  },
   primaryButton: {
-    flex: 1,
+    flexBasis: "48%",
+    flexGrow: 1,
     backgroundColor: "#2563eb",
     borderRadius: 17,
     paddingVertical: 15,
     alignItems: "center",
   },
   primaryButtonText: { color: "#fff", fontWeight: "900" },
+  secondaryButton: {
+    flexBasis: "48%",
+    flexGrow: 1,
+    backgroundColor: "#f1f5f9",
+    borderRadius: 17,
+    paddingVertical: 15,
+    alignItems: "center",
+  },
+  secondaryButtonText: { color: "#0f172a", fontWeight: "900" },
+  dangerButton: {
+    flexBasis: "48%",
+    flexGrow: 1,
+    backgroundColor: "#fee2e2",
+    borderRadius: 17,
+    paddingVertical: 15,
+    alignItems: "center",
+  },
+  dangerButtonText: { color: "#991b1b", fontWeight: "900" },
+  disabledButton: { opacity: 0.6 },
 });

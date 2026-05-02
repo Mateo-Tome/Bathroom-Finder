@@ -1,7 +1,7 @@
 import * as Location from "expo-location";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { collection, getDocs } from "firebase/firestore";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Linking,
@@ -28,6 +28,12 @@ function getScoreColor(score?: number) {
 }
 
 function getOverallScore(bathroom: BathroomCardData) {
+  const directOverall = (bathroom as any).overallAvg;
+
+  if (typeof directOverall === "number" && directOverall > 0) {
+    return directOverall;
+  }
+
   const scores = [
     bathroom.cleanlinessAvg,
     bathroom.safetyAvg,
@@ -47,84 +53,98 @@ export default function MapScreen() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [isCardOpen, setIsCardOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
+  const [hasLocationDenied, setHasLocationDenied] = useState(false);
 
   const selectedBathroom = useMemo(() => {
     if (bathrooms.length === 0) return null;
     return bathrooms[selectedIndex] ?? bathrooms[0];
   }, [bathrooms, selectedIndex]);
 
-  useEffect(() => {
-    async function loadMapData() {
-      try {
-        setIsLoading(true);
+  const loadMapData = useCallback(async () => {
+    try {
+      setIsLoading(true);
 
-        const { status } = await Location.requestForegroundPermissionsAsync();
+      const { status } = await Location.requestForegroundPermissionsAsync();
 
-        if (status !== "granted") {
-          alert("Location permission is needed to show bathrooms near you.");
-          setIsLoading(false);
-          return;
-        }
-
-        const location = await Location.getCurrentPositionAsync({});
-
-        setRegion({
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          latitudeDelta: 0.035,
-          longitudeDelta: 0.035,
-        });
-
-        const snapshot = await getDocs(collection(db, "bathrooms"));
-
-        const bathroomData = snapshot.docs
-          .map((doc) => {
-            const data = doc.data();
-
-            return {
-              id: doc.id,
-              name: data.name,
-              notes: data.notes,
-              latitude: Number(data.latitude),
-              longitude: Number(data.longitude),
-              cleanlinessAvg:
-                data.cleanlinessAvg ?? data.ratings?.cleanlinessAvg,
-              safetyAvg: data.safetyAvg ?? data.ratings?.safetyAvg,
-              accessAvg: data.accessAvg ?? data.ratings?.accessAvg,
-              totalReviews: data.totalReviews ?? data.ratings?.totalReviews,
-              accessType: data.accessType,
-              codeHint: data.codeHint,
-              imageUrls: data.imageUrls ?? data.images ?? [],
-              coverImageUrl:
-                data.coverImageUrl ??
-                data.imageUrls?.[0] ??
-                data.images?.[0] ??
-                null,
-              wheelchairAccessible: data.wheelchairAccessible,
-            };
-          })
-          .filter(
-            (bathroom) =>
-              Number.isFinite(bathroom.latitude) &&
-              Number.isFinite(bathroom.longitude),
-          );
-
-        setBathrooms(bathroomData);
-        setSelectedIndex(0);
-        setIsCardOpen(bathroomData.length > 0);
-      } catch (error) {
-        console.error("Error loading bathrooms:", error);
-        alert("Something went wrong loading bathrooms.");
-      } finally {
+      if (status !== "granted") {
+        setHasLocationDenied(true);
         setIsLoading(false);
+        return;
       }
-    }
 
-    loadMapData();
+      setHasLocationDenied(false);
+
+      const location = await Location.getCurrentPositionAsync({});
+
+      setRegion({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        latitudeDelta: 0.035,
+        longitudeDelta: 0.035,
+      });
+
+      const snapshot = await getDocs(collection(db, "bathrooms"));
+
+      const bathroomData = snapshot.docs
+        .map((doc) => {
+          const data = doc.data();
+
+          return {
+            id: doc.id,
+            name: data.name,
+            notes: data.notes,
+            latitude: Number(data.latitude),
+            longitude: Number(data.longitude),
+            cleanlinessAvg: data.cleanlinessAvg ?? data.ratings?.cleanlinessAvg,
+            safetyAvg: data.safetyAvg ?? data.ratings?.safetyAvg,
+            accessAvg: data.accessAvg ?? data.ratings?.accessAvg,
+            privacyAvg: data.privacyAvg ?? data.ratings?.privacyAvg,
+            overallAvg: data.overallAvg ?? data.ratings?.overallAvg,
+            totalReviews: data.totalReviews ?? data.ratings?.totalReviews,
+            accessType: data.accessType,
+            codeHint: data.codeHint,
+            imageUrls: data.imageUrls ?? data.images ?? [],
+            coverImageUrl:
+              data.coverImageUrl ??
+              data.imageUrls?.[0] ??
+              data.images?.[0] ??
+              null,
+            wheelchairAccessible: data.wheelchairAccessible,
+
+            verificationStatus: data.verificationStatus ?? "unverified",
+            verificationCount: data.verificationCount ?? 0,
+            reportCount: data.reportCount ?? 0,
+            isFlagged: data.isFlagged ?? false,
+            isHidden: data.isHidden ?? false,
+          } as BathroomCardData;
+        })
+        .filter(
+          (bathroom) =>
+            !(bathroom as any).isHidden &&
+            Number.isFinite(bathroom.latitude) &&
+            Number.isFinite(bathroom.longitude),
+        );
+
+      setBathrooms(bathroomData);
+      setSelectedIndex(0);
+      setIsCardOpen(bathroomData.length > 0);
+    } catch (error) {
+      console.error("Error loading bathrooms:", error);
+      alert("Something went wrong loading bathrooms.");
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadMapData();
+    }, [loadMapData]),
+  );
 
   const selectBathroomById = (bathroomId: string) => {
     const index = bathrooms.findIndex((bathroom) => bathroom.id === bathroomId);
+
     if (index >= 0) {
       setSelectedIndex(index);
       setIsCardOpen(true);
@@ -136,6 +156,7 @@ export default function MapScreen() {
       if (bathrooms.length === 0) return 0;
       return current === 0 ? bathrooms.length - 1 : current - 1;
     });
+
     setIsCardOpen(true);
   };
 
@@ -144,6 +165,7 @@ export default function MapScreen() {
       if (bathrooms.length === 0) return 0;
       return current === bathrooms.length - 1 ? 0 : current + 1;
     });
+
     setIsCardOpen(true);
   };
 
@@ -158,13 +180,27 @@ export default function MapScreen() {
         {isLoading || !region ? (
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color="#2563eb" />
-            <Text style={styles.loadingTitle}>Finding bathrooms nearby</Text>
-            <Text style={styles.loadingText}>
-              Loading the map and checking saved bathrooms...
+
+            <Text style={styles.loadingTitle}>
+              {hasLocationDenied
+                ? "Location needed"
+                : "Finding bathrooms nearby"}
             </Text>
+
+            <Text style={styles.loadingText}>
+              {hasLocationDenied
+                ? "Location permission is needed to show bathrooms near you."
+                : "Loading the map and checking saved bathrooms..."}
+            </Text>
+
+            {hasLocationDenied && (
+              <Pressable style={styles.retryButton} onPress={loadMapData}>
+                <Text style={styles.retryButtonText}>Try Again</Text>
+              </Pressable>
+            )}
           </View>
         ) : (
-          <MapView style={styles.map} initialRegion={region} showsUserLocation>
+          <MapView style={styles.map} region={region} showsUserLocation>
             {bathrooms.map((bathroom) => {
               const overallScore = getOverallScore(bathroom);
               const pinColor = getScoreColor(overallScore);
@@ -178,7 +214,11 @@ export default function MapScreen() {
                   }}
                   pinColor={pinColor}
                   title={bathroom.name ?? "Bathroom"}
-                  description={bathroom.notes}
+                  description={
+                    (bathroom as any).verificationStatus === "verified"
+                      ? "Verified bathroom"
+                      : "Unverified bathroom"
+                  }
                   onPress={() => selectBathroomById(bathroom.id)}
                 />
               );
@@ -194,9 +234,10 @@ export default function MapScreen() {
         <Text style={styles.addButtonText}>+</Text>
       </Pressable>
 
-      {!isLoading && bathrooms.length === 0 && (
+      {!isLoading && bathrooms.length === 0 && !hasLocationDenied && (
         <View style={styles.emptyCard}>
           <Text style={styles.emptyTitle}>No bathrooms here yet</Text>
+
           <Text style={styles.emptyText}>
             Add the first bathroom nearby so other people can find it later.
           </Text>
@@ -229,17 +270,9 @@ export default function MapScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#000000",
-  },
-  mapWrap: {
-    flex: 1,
-    backgroundColor: "#000000",
-  },
-  map: {
-    flex: 1,
-  },
+  container: { flex: 1, backgroundColor: "#000000" },
+  mapWrap: { flex: 1, backgroundColor: "#000000" },
+  map: { flex: 1 },
   loadingWrap: {
     flex: 1,
     alignItems: "center",
@@ -260,6 +293,14 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 20,
   },
+  retryButton: {
+    backgroundColor: "#2563eb",
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    marginTop: 16,
+  },
+  retryButtonText: { color: "#ffffff", fontWeight: "900" },
   addButton: {
     position: "absolute",
     top: 58,
@@ -294,11 +335,7 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 8,
   },
-  emptyTitle: {
-    color: "#0f172a",
-    fontSize: 19,
-    fontWeight: "900",
-  },
+  emptyTitle: { color: "#0f172a", fontSize: 19, fontWeight: "900" },
   emptyText: {
     color: "#64748b",
     fontSize: 14,
@@ -312,8 +349,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 14,
   },
-  emptyButtonText: {
-    color: "#ffffff",
-    fontWeight: "900",
-  },
+  emptyButtonText: { color: "#ffffff", fontWeight: "900" },
 });

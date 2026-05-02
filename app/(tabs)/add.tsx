@@ -1,24 +1,20 @@
-import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
+import { useRouter } from "expo-router";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
-import { getDownloadURL, getStorage, ref, uploadBytes } from "firebase/storage";
 import React, { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    Pressable,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
 import { db } from "@/firebaseConfig";
-
-const storage = getStorage();
 
 type AccessType =
   | "public"
@@ -26,6 +22,8 @@ type AccessType =
   | "code_required"
   | "key_required"
   | "ask_staff";
+
+type RatingValue = 1 | 2 | 3 | 4 | 5;
 
 const accessOptions: { label: string; value: AccessType }[] = [
   { label: "Public", value: "public" },
@@ -35,78 +33,71 @@ const accessOptions: { label: string; value: AccessType }[] = [
   { label: "Ask Staff", value: "ask_staff" },
 ];
 
+function RatingSelector({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: RatingValue;
+  onChange: (value: RatingValue) => void;
+}) {
+  return (
+    <View style={styles.ratingGroup}>
+      <Text style={styles.label}>{label}</Text>
+
+      <View style={styles.ratingRow}>
+        {[1, 2, 3, 4, 5].map((rating) => (
+          <Pressable
+            key={rating}
+            style={[
+              styles.ratingButton,
+              value === rating && styles.ratingButtonActive,
+            ]}
+            onPress={() => onChange(rating as RatingValue)}
+          >
+            <Text
+              style={[
+                styles.ratingButtonText,
+                value === rating && styles.ratingButtonTextActive,
+              ]}
+            >
+              {rating}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function getOverallAverage(values: number[]) {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  return Number((total / values.length).toFixed(2));
+}
+
 export default function AddScreen() {
+  const router = useRouter();
+
   const [bathroomName, setBathroomName] = useState("");
   const [notes, setNotes] = useState("");
   const [accessType, setAccessType] = useState<AccessType>("public");
   const [codeHint, setCodeHint] = useState("");
-  const [bathroomImages, setBathroomImages] = useState<string[]>([]);
+
+  const [cleanliness, setCleanliness] = useState<RatingValue>(3);
+  const [safety, setSafety] = useState<RatingValue>(3);
+  const [access, setAccess] = useState<RatingValue>(3);
+  const [privacy, setPrivacy] = useState<RatingValue>(3);
+
   const [isSaving, setIsSaving] = useState(false);
-
-  const pickImagesFromGallery = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      allowsMultipleSelection: true,
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
-    });
-
-    if (!result.canceled) {
-      setBathroomImages((prev) => [
-        ...prev,
-        ...result.assets.map((asset) => asset.uri),
-      ]);
-    }
-  };
-
-  const takePhoto = async () => {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-
-    if (!permission.granted) {
-      Alert.alert(
-        "Camera required",
-        "Camera access is needed to take bathroom photos.",
-      );
-      return;
-    }
-
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      quality: 0.7,
-    });
-
-    if (!result.canceled) {
-      setBathroomImages((prev) => [...prev, result.assets[0].uri]);
-    }
-  };
-
-  const removeImage = (indexToRemove: number) => {
-    setBathroomImages((prev) =>
-      prev.filter((_, index) => index !== indexToRemove),
-    );
-  };
-
-  const uploadImages = async () => {
-    const uploadPromises = bathroomImages.map(async (uri, index) => {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const imageRef = ref(
-        storage,
-        `bathroomImages/${Date.now()}-${index}.jpg`,
-      );
-
-      await uploadBytes(imageRef, blob);
-
-      return getDownloadURL(imageRef);
-    });
-
-    return Promise.all(uploadPromises);
-  };
 
   const handleSave = async () => {
     if (!bathroomName.trim()) {
       Alert.alert("Missing name", "Add a name for this bathroom.");
       return;
     }
+
+    if (isSaving) return;
 
     try {
       setIsSaving(true);
@@ -124,7 +115,12 @@ export default function AddScreen() {
       const location = await Location.getCurrentPositionAsync({});
       const { latitude, longitude } = location.coords;
 
-      const imageUrls = await uploadImages();
+      const overallAvg = getOverallAverage([
+        cleanliness,
+        safety,
+        access,
+        privacy,
+      ]);
 
       await addDoc(collection(db, "bathrooms"), {
         name: bathroomName.trim(),
@@ -137,15 +133,23 @@ export default function AddScreen() {
         status: "open",
         isPublic: accessType === "public",
 
-        cleanlinessAvg: 0,
-        safetyAvg: 0,
-        accessAvg: 0,
-        privacyAvg: 0,
-        overallAvg: 0,
-        totalReviews: 0,
+        cleanlinessAvg: cleanliness,
+        safetyAvg: safety,
+        accessAvg: access,
+        privacyAvg: privacy,
+        overallAvg,
+        totalReviews: 1,
 
-        imageUrls,
-        coverImageUrl: imageUrls[0] ?? null,
+        imageUrls: [],
+        coverImageUrl: null,
+
+        verificationStatus: "unverified",
+        verificationCount: 0,
+        reportCount: 0,
+        isFlagged: false,
+        isHidden: false,
+        lastVerifiedAt: null,
+        createdByRole: "user",
 
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -157,7 +161,12 @@ export default function AddScreen() {
       setNotes("");
       setAccessType("public");
       setCodeHint("");
-      setBathroomImages([]);
+      setCleanliness(3);
+      setSafety(3);
+      setAccess(3);
+      setPrivacy(3);
+
+      router.replace("/" as any);
     } catch (error) {
       console.error("Error saving bathroom:", error);
       Alert.alert("Save failed", "Something went wrong. Try again.");
@@ -168,14 +177,12 @@ export default function AddScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+      <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <Text style={styles.title}>Add Bathroom</Text>
           <Text style={styles.subtitle}>
-            Help someone find a clean, safe, usable bathroom fast.
+            Add a bathroom location and give it a first rating. New bathrooms
+            start unverified until people confirm them.
           </Text>
         </View>
 
@@ -199,6 +206,26 @@ export default function AddScreen() {
             value={notes}
             onChangeText={setNotes}
             multiline
+          />
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>First Rating</Text>
+          <RatingSelector
+            label="Cleanliness"
+            value={cleanliness}
+            onChange={setCleanliness}
+          />
+          <RatingSelector label="Safety" value={safety} onChange={setSafety} />
+          <RatingSelector
+            label="Ease of access"
+            value={access}
+            onChange={setAccess}
+          />
+          <RatingSelector
+            label="Privacy"
+            value={privacy}
+            onChange={setPrivacy}
           />
         </View>
 
@@ -241,44 +268,11 @@ export default function AddScreen() {
           />
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Photos</Text>
-          <Text style={styles.helperText}>
-            Add photos of the entrance, sign, or bathroom condition.
+        <View style={styles.disabledCard}>
+          <Text style={styles.disabledTitle}>Photos coming next</Text>
+          <Text style={styles.disabledText}>
+            Firebase Storage is not set up yet, so photos are disabled for now.
           </Text>
-
-          <View style={styles.photoActions}>
-            <Pressable style={styles.secondaryButton} onPress={takePhoto}>
-              <Text style={styles.secondaryButtonText}>Take Photo</Text>
-            </Pressable>
-
-            <Pressable
-              style={styles.secondaryButton}
-              onPress={pickImagesFromGallery}
-            >
-              <Text style={styles.secondaryButtonText}>Choose Photos</Text>
-            </Pressable>
-          </View>
-
-          {bathroomImages.length > 0 && (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              style={styles.photoRow}
-            >
-              {bathroomImages.map((uri, index) => (
-                <View key={`${uri}-${index}`} style={styles.photoWrap}>
-                  <Image source={{ uri }} style={styles.photo} />
-                  <Pressable
-                    style={styles.removePhotoButton}
-                    onPress={() => removeImage(index)}
-                  >
-                    <Text style={styles.removePhotoText}>×</Text>
-                  </Pressable>
-                </View>
-              ))}
-            </ScrollView>
-          )}
         </View>
 
         <Pressable
@@ -292,40 +286,17 @@ export default function AddScreen() {
             <Text style={styles.saveButtonText}>Save Bathroom</Text>
           )}
         </Pressable>
-
-        <Text style={styles.footerNote}>
-          Ratings come next after the bathroom exists. Users will be able to
-          update cleanliness, safety, privacy, and access from the detail
-          screen.
-        </Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0f172a",
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 120,
-  },
-  header: {
-    marginBottom: 16,
-  },
-  title: {
-    color: "#ffffff",
-    fontSize: 30,
-    fontWeight: "800",
-  },
-  subtitle: {
-    color: "#cbd5e1",
-    fontSize: 15,
-    marginTop: 4,
-    lineHeight: 21,
-  },
+  container: { flex: 1, backgroundColor: "#0f172a" },
+  content: { padding: 16, paddingBottom: 120 },
+  header: { marginBottom: 16 },
+  title: { color: "#ffffff", fontSize: 30, fontWeight: "800" },
+  subtitle: { color: "#cbd5e1", fontSize: 15, marginTop: 4, lineHeight: 21 },
   card: {
     backgroundColor: "#ffffff",
     borderRadius: 24,
@@ -355,15 +326,20 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     fontSize: 15,
   },
-  textArea: {
-    minHeight: 92,
-    textAlignVertical: "top",
+  textArea: { minHeight: 92, textAlignVertical: "top" },
+  ratingGroup: { marginBottom: 14 },
+  ratingRow: { flexDirection: "row", gap: 8 },
+  ratingButton: {
+    flex: 1,
+    backgroundColor: "#f1f5f9",
+    borderRadius: 14,
+    paddingVertical: 13,
+    alignItems: "center",
   },
-  optionGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
+  ratingButtonActive: { backgroundColor: "#2563eb" },
+  ratingButtonText: { color: "#334155", fontWeight: "900" },
+  ratingButtonTextActive: { color: "#ffffff" },
+  optionGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   optionChip: {
     backgroundColor: "#f1f5f9",
     borderWidth: 1,
@@ -372,69 +348,23 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 999,
   },
-  optionChipActive: {
-    backgroundColor: "#2563eb",
-    borderColor: "#2563eb",
+  optionChipActive: { backgroundColor: "#2563eb", borderColor: "#2563eb" },
+  optionText: { color: "#334155", fontSize: 13, fontWeight: "800" },
+  optionTextActive: { color: "#ffffff" },
+  disabledCard: {
+    backgroundColor: "#1e293b",
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#334155",
   },
-  optionText: {
-    color: "#334155",
+  disabledTitle: { color: "#ffffff", fontSize: 16, fontWeight: "900" },
+  disabledText: {
+    color: "#cbd5e1",
     fontSize: 13,
-    fontWeight: "800",
-  },
-  optionTextActive: {
-    color: "#ffffff",
-  },
-  helperText: {
-    color: "#64748b",
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 12,
-  },
-  photoActions: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  secondaryButton: {
-    flex: 1,
-    backgroundColor: "#f1f5f9",
-    borderRadius: 16,
-    paddingVertical: 13,
-    alignItems: "center",
-  },
-  secondaryButtonText: {
-    color: "#0f172a",
-    fontWeight: "800",
-  },
-  photoRow: {
-    marginTop: 14,
-  },
-  photoWrap: {
-    width: 92,
-    height: 92,
-    marginRight: 10,
-  },
-  photo: {
-    width: 92,
-    height: 92,
-    borderRadius: 16,
-    backgroundColor: "#e5e7eb",
-  },
-  removePhotoButton: {
-    position: "absolute",
-    top: -7,
-    right: -7,
-    width: 26,
-    height: 26,
-    borderRadius: 99,
-    backgroundColor: "#dc2626",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  removePhotoText: {
-    color: "#ffffff",
-    fontSize: 20,
-    lineHeight: 22,
-    fontWeight: "800",
+    lineHeight: 19,
+    marginTop: 6,
   },
   saveButton: {
     backgroundColor: "#2563eb",
@@ -443,20 +373,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 4,
   },
-  saveButtonDisabled: {
-    opacity: 0.7,
-  },
-  saveButtonText: {
-    color: "#ffffff",
-    fontSize: 16,
-    fontWeight: "900",
-  },
-  footerNote: {
-    color: "#94a3b8",
-    fontSize: 13,
-    lineHeight: 19,
-    textAlign: "center",
-    marginTop: 14,
-    paddingHorizontal: 10,
-  },
+  saveButtonDisabled: { opacity: 0.7 },
+  saveButtonText: { color: "#ffffff", fontSize: 16, fontWeight: "900" },
 });
